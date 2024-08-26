@@ -1,0 +1,78 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License.
+
+name: deploy-infrastructure
+
+variables:
+  - ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+      # 'main' branch: PRD environment
+      - template: ../environment_config/config-infra-dev.yml
+  - ${{ if ne(variables['Build.SourceBranchName'], 'main') }}:
+      # 'develop' or feature branches: DEV environment
+      - template: ../environment_config/config-infra-dev.yml
+
+trigger: none
+
+pool:
+  vmImage: $(ap_vm_image)
+
+stages:
+  - stage: Lint
+    displayName: Lint and Preflight check
+    jobs:
+      - job: LintBicep
+        displayName: Lint Bicep Code
+        steps:
+          - checkout: self
+          - script: |
+              az bicep build --file ./infrastructure/bicep/main.bicep
+            name: LintBicepCode
+            displayName: Run Bicep Linter
+
+  - stage: PreflightValidation
+    displayName: Preflight Validation
+    jobs:
+      - job: ValidateBicepCode
+        displayName: Validate Bicep Code
+        steps:
+          - task: AzureCli@2
+            name: RunPreflightValidateion
+            displayName: Run Preflight Validation
+            inputs:
+              azureSubscription: $(ado_service_connection_rg)
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                az deployment sub validate \
+                  --name $(Build.DefinitionName) \
+                  --template-file ./infrastructure/bicep/main.bicep \
+                  --location $(location) \
+                  --parameters location=$(location) env=$(environment) namespace=$(namespace) resource_group=$(resource_group) storage_account=$(storage_account) key_vault=$(key_vault) application_insights=$(application_insights) container_registry=$(container_registry) aml_workspace=$(aml_workspace) ownerTag=$(ownerTag) projectTag=$(projectTag)
+
+  - stage: CheckOutBicepAndDeploy
+    displayName: Deploy AML Workspace
+    jobs:
+      - deployment: DevDeployBicep
+        displayName: Deploy Bicep
+        pool:
+          vmImage: $(ap_vm_image)
+        environment: $(environment)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  displayName: Running ${{ variables.environment }} Deployment
+                  inputs:
+                    azureSubscription: $(ado_service_connection_rg)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az --version
+                      echo "deploying bicep..."
+                      az deployment sub create \
+                        --name $(Build.DefinitionName) \
+                        --location $(location) \
+                        --template-file ./infrastructure/bicep/main.bicep \
+                        --parameters location=$(location) env=$(environment) namespace=$(namespace) resource_group=$(resource_group) storage_account=$(storage_account) key_vault=$(key_vault) application_insights=$(application_insights) container_registry=$(container_registry) aml_workspace=$(aml_workspace) ownerTag=$(ownerTag) projectTag=$(projectTag)
